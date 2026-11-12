@@ -1,0 +1,33 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "shorty",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-01",
+  "compatibility_flags": [
+    "nodejs_compat"
+  ],
+  "workers_dev": true,
+  "kv_namespaces": [
+    {
+      "binding": "SHORTY_KV",
+      "id": "shorty_kv_prod",
+      "preview_id": "shorty_kv_preview"
+    }
+  ],
+  // Connect to existing Cloudflare domain zone by default
+  // Worker Custom Domains automatically provision DNS records & universal edge SSL
+  "routes": [
+    {
+      "pattern": "shorty.gbimantoro.com/*",
+      "zone_name": "gbimantoro.com"
+    }
+  ],
+  "vars": {
+    "APP_NAME": "Shorty",
+    "DEFAULT_REDIRECT_CODE": "302",
+    "RATE_LIMIT_PER_MINUTE": "60"
+  },
+  "observability": {
+    "enabled": true
+  }
+}
