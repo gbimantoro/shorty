@@ -3,8 +3,14 @@ import {
   validateTargetUrl,
   validateSlug,
   generateSlug,
-  verifyAuth,
+  timingSafeCompare,
+  verifyRequestAuth,
+  signSessionToken,
+  buildSessionCookie,
   checkRateLimit,
+  checkLoginThrottle,
+  recordLoginFailure,
+  clearLoginThrottle,
   addSecurityHeaders
 } from "./security";
 import { renderHtml } from "./html";
@@ -19,7 +25,7 @@ export default {
       return addSecurityHeaders(
         new Response(JSON.stringify({ success: false, error: message }), {
           status: 500,
-          headers: { "Content-Type": "application/json" }
+          headers: { "Content-Type": "application/json", "Cache-Control": "no-store" }
         })
       );
     }
@@ -30,6 +36,7 @@ async function handleRequest(request: Request, env: Env, ctx: ExecutionContext):
   const url = new URL(request.url);
   const method = request.method.toUpperCase();
   const path = url.pathname;
+  const isHttps = url.protocol === "https:";
 
   // Handle CORS Preflight
   if (method === "OPTIONS") {
@@ -64,9 +71,13 @@ async function handleRequest(request: Request, env: Env, ctx: ExecutionContext):
         data: {
           app: env.APP_NAME || "Shorty",
           status: "online",
-          version: "1.0.0",
+          version: "1.1.0",
           endpoints: {
+            login: "POST /api/auth/login",
+            logout: "POST /api/auth/logout",
+            me: "GET /api/auth/me",
             shorten: "POST /api/shorten",
+            links: "GET /api/links",
             stats: "GET /api/stats/:slug",
             delete: "DELETE /api/links/:slug",
             health: "GET /health"
@@ -78,7 +89,7 @@ async function handleRequest(request: Request, env: Env, ctx: ExecutionContext):
       status: 200,
       headers: {
         "Content-Type": "text/html; charset=utf-8",
-        "Cache-Control": "public, max-age=3600"
+        "Cache-Control": "no-store"
       }
     });
   }
@@ -100,9 +111,133 @@ async function handleRequest(request: Request, env: Env, ctx: ExecutionContext):
     });
   }
 
-  // 4. API: Create / Shorten Link
-  if (path === "/api/shorten" || path === "/api/links") {
+  // 4. Auth: Login
+  if (path === "/api/auth/login") {
     if (method !== "POST") return jsonError("Method not allowed", 405);
+
+    // Fail-closed if production secrets are not configured
+    if (!env.SESSION_SECRET || env.SESSION_SECRET.trim().length < 16 || !env.ADMIN_PASSWORD || !env.ADMIN_USERNAME) {
+      return jsonError("Authentication is not configured on this server.", 503);
+    }
+
+    const clientIp = request.headers.get("CF-Connecting-IP") || "127.0.0.1";
+    const throttle = checkLoginThrottle(clientIp);
+    if (!throttle.allowed) {
+      return new Response(
+        JSON.stringify({
+          success: false,
+          error: `Too many failed login attempts. Try again in ${throttle.retryAfter}s.`
+        }),
+        {
+          status: 429,
+          headers: {
+            "Content-Type": "application/json",
+            "Cache-Control": "no-store",
+            "Retry-After": String(throttle.retryAfter)
+          }
+        }
+      );
+    }
+
+    const contentLength = parseInt(request.headers.get("content-length") || "0", 10);
+    if (contentLength > 2048) {
+      return jsonError("Payload too large.", 413);
+    }
+
+    let body: { username?: unknown; password?: unknown };
+    try {
+      body = await request.json();
+    } catch {
+      return jsonError("Invalid JSON body.", 400);
+    }
+
+    const username = typeof body.username === "string" ? body.username.trim() : "";
+    const password = typeof body.password === "string" ? body.password : "";
+
+    if (
+      !/^[a-zA-Z0-9._-]{2,64}$/.test(username) ||
+      password.length < 1 ||
+      password.length > 256
+    ) {
+      recordLoginFailure(clientIp);
+      return jsonError("Invalid credentials.", 401);
+    }
+
+    const userOk = await timingSafeCompare(username, env.ADMIN_USERNAME.trim());
+    const passOk = await timingSafeCompare(password, env.ADMIN_PASSWORD);
+
+    if (!userOk || !passOk) {
+      const failState = recordLoginFailure(clientIp);
+      if (failState.locked) {
+        return new Response(
+          JSON.stringify({
+            success: false,
+            error: `Too many failed login attempts. Try again in ${failState.retryAfter}s.`
+          }),
+          {
+            status: 429,
+            headers: {
+              "Content-Type": "application/json",
+              "Cache-Control": "no-store",
+              "Retry-After": String(failState.retryAfter)
+            }
+          }
+        );
+      }
+      return jsonError("Invalid credentials.", 401);
+    }
+
+    clearLoginThrottle(clientIp);
+    const token = await signSessionToken(username, env.SESSION_SECRET);
+
+    return new Response(
+      JSON.stringify({
+        success: true,
+        data: { authenticated: true, username }
+      }),
+      {
+        status: 200,
+        headers: {
+          "Content-Type": "application/json",
+          "Cache-Control": "no-store",
+          "Set-Cookie": buildSessionCookie(token, isHttps)
+        }
+      }
+    );
+  }
+
+  // 5. Auth: Logout
+  if (path === "/api/auth/logout") {
+    if (method !== "POST") return jsonError("Method not allowed", 405);
+    return new Response(JSON.stringify({ success: true }), {
+      status: 200,
+      headers: {
+        "Content-Type": "application/json",
+        "Cache-Control": "no-store",
+        "Set-Cookie": buildSessionCookie("", isHttps, 0)
+      }
+    });
+  }
+
+  // 6. Auth: Me
+  if (path === "/api/auth/me") {
+    if (method !== "GET") return jsonError("Method not allowed", 405);
+    const auth = await verifyRequestAuth(request, env);
+    if (!auth) return jsonError("Unauthorized", 401);
+    return jsonResponse({
+      success: true,
+      data: { authenticated: true, username: auth.username, method: auth.method }
+    });
+  }
+
+  // 7. API: Create / Shorten Link (Authenticated)
+  if (path === "/api/shorten" || (path === "/api/links" && method === "POST")) {
+    if (method !== "POST") return jsonError("Method not allowed", 405);
+
+    const auth = await verifyRequestAuth(request, env);
+    if (!auth) {
+      return jsonError("Unauthorized: Please sign in or provide a valid API key.", 401);
+    }
 
     // Rate limiting per IP
     const clientIp = request.headers.get("CF-Connecting-IP") || "127.0.0.1";
@@ -118,16 +253,11 @@ async function handleRequest(request: Request, env: Env, ctx: ExecutionContext):
           status: 429,
           headers: {
             "Content-Type": "application/json",
+            "Cache-Control": "no-store",
             "Retry-After": String(rlCheck.reset - Math.ceil(Date.now() / 1000))
           }
         }
       );
-    }
-
-    // Auth verification
-    const isAuthorized = await verifyAuth(request, env.API_KEY);
-    if (!isAuthorized) {
-      return jsonError("Unauthorized: Valid API key required.", 401);
     }
 
     // Body parsing with size cap
@@ -199,7 +329,8 @@ async function handleRequest(request: Request, env: Env, ctx: ExecutionContext):
       expiresAt,
       status,
       clicks: 0,
-      lastClickedAt: null
+      lastClickedAt: null,
+      createdBy: auth.username
     };
 
     // Store in Cloudflare KV
@@ -225,9 +356,36 @@ async function handleRequest(request: Request, env: Env, ctx: ExecutionContext):
     );
   }
 
-  // 5. API: Get Link Stats
+  // 8. API: List All Links (Authenticated)
+  if (path === "/api/links" && method === "GET") {
+    const auth = await verifyRequestAuth(request, env);
+    if (!auth) return jsonError("Unauthorized", 401);
+
+    const list = await env.SHORTY_KV.list({ prefix: "link:", limit: 250 });
+    const records = await Promise.all(
+      list.keys.map(async (k) => {
+        const raw = await env.SHORTY_KV.get(k.name);
+        if (!raw) return null;
+        try {
+          return JSON.parse(raw) as LinkRecord;
+        } catch {
+          return null;
+        }
+      })
+    );
+
+    return jsonResponse({
+      success: true,
+      data: records.filter((r): r is LinkRecord => r !== null)
+    });
+  }
+
+  // 9. API: Get Link Stats (Authenticated)
   if (path.startsWith("/api/stats/")) {
     if (method !== "GET") return jsonError("Method not allowed", 405);
+
+    const auth = await verifyRequestAuth(request, env);
+    if (!auth) return jsonError("Unauthorized", 401);
 
     const slug = path.replace("/api/stats/", "").trim();
     const slugCheck = validateSlug(slug);
@@ -243,12 +401,12 @@ async function handleRequest(request: Request, env: Env, ctx: ExecutionContext):
     });
   }
 
-  // 6. API: Delete Link
+  // 10. API: Delete Link (Authenticated)
   if (path.startsWith("/api/links/")) {
     if (method !== "DELETE") return jsonError("Method not allowed", 405);
 
-    const isAuthorized = await verifyAuth(request, env.API_KEY);
-    if (!isAuthorized) return jsonError("Unauthorized", 401);
+    const auth = await verifyRequestAuth(request, env);
+    if (!auth) return jsonError("Unauthorized", 401);
 
     const slug = path.replace("/api/links/", "").trim();
     const slugCheck = validateSlug(slug);
@@ -261,7 +419,7 @@ async function handleRequest(request: Request, env: Env, ctx: ExecutionContext):
     return jsonResponse({ success: true, message: `Link "${slugCheck.slug}" deleted.` });
   }
 
-  // 7. Short URL Redirection: /:slug
+  // 11. Short URL Redirection: /:slug (Public, sub-10ms edge redirect)
   const candidateSlug = path.slice(1);
   const slugValidation = validateSlug(candidateSlug);
   if (!slugValidation.ok) {
@@ -327,6 +485,7 @@ function jsonResponse(data: unknown, status = 200): Response {
     status,
     headers: {
       "Content-Type": "application/json",
+      "Cache-Control": "no-store",
       "Access-Control-Allow-Origin": "*"
     }
   });

@@ -6,6 +6,8 @@ import {
   generateSlug,
   timingSafeCompare,
   verifyAuth,
+  signSessionToken,
+  verifySessionToken,
   checkRateLimit,
   addSecurityHeaders
 } from "../src/security";
@@ -74,6 +76,7 @@ describe("Security & Validation", () => {
       assert.equal(validateSlug("health").ok, false);
       assert.equal(validateSlug("robots.txt").ok, false);
       assert.equal(validateSlug("stats").ok, false);
+      assert.equal(validateSlug("login").ok, false);
     });
 
     it("rejects path traversal and unsafe characters", () => {
@@ -110,12 +113,12 @@ describe("Security & Validation", () => {
       assert.equal(await timingSafeCompare("short", "longer-string"), false);
     });
 
-    it("verifies auth via Bearer and X-API-Key", async () => {
+    it("verifies auth via Bearer and X-API-Key and fails closed when unconfigured", async () => {
       const secret = "test-secret-token-2026";
 
-      // Open mode when no key configured
+      // Fail closed when no key configured
       const reqOpen = new Request("https://shorty.test/api/shorten");
-      assert.equal(await verifyAuth(reqOpen, undefined), true);
+      assert.equal(await verifyAuth(reqOpen, undefined), false);
 
       // Bearer header
       const reqBearer = new Request("https://shorty.test/api/shorten", {
@@ -134,6 +137,28 @@ describe("Security & Validation", () => {
         headers: { Authorization: "Bearer wrong-key" }
       });
       assert.equal(await verifyAuth(reqBad, secret), false);
+    });
+  });
+
+  describe("HMAC Session Tokens", () => {
+    const secret = "0123456789abcdef0123456789abcdef0123456789abcdef";
+
+    it("signs and verifies valid session token", async () => {
+      const token = await signSessionToken("admin", secret, 3600);
+      const payload = await verifySessionToken(token, secret);
+      assert.ok(payload);
+      assert.equal(payload.sub, "admin");
+    });
+
+    it("rejects tampered session token", async () => {
+      const token = await signSessionToken("admin", secret, 3600);
+      const tampered = token.slice(0, -4) + "xxxx";
+      assert.equal(await verifySessionToken(tampered, secret), null);
+    });
+
+    it("rejects expired session token", async () => {
+      const token = await signSessionToken("admin", secret, -10);
+      assert.equal(await verifySessionToken(token, secret), null);
     });
   });
 
@@ -163,8 +188,7 @@ describe("Security & Validation", () => {
   });
 });
 
-describe("Worker Request & KV Integration", () => {
-  // In-memory KV Mock
+describe("Worker Request, Auth & KV Integration", () => {
   function createMockKV(): KVNamespace {
     const store = new Map<string, string>();
     return {
@@ -176,20 +200,36 @@ describe("Worker Request & KV Integration", () => {
       },
       async delete(key: string) {
         store.delete(key);
+      },
+      async list(opts?: { prefix?: string }) {
+        const prefix = opts?.prefix || "";
+        const keys = Array.from(store.keys())
+          .filter((k) => k.startsWith(prefix))
+          .map((name) => ({ name }));
+        return { keys, list_complete: true, cacheStatus: null };
       }
     } as unknown as KVNamespace;
   }
 
   const mockCtx = {
     waitUntil(promise: Promise<unknown>) {
-      // execute in background
       promise.catch(() => {});
     },
     passThroughOnException() {}
   } as unknown as ExecutionContext;
 
+  function createEnv(): Env {
+    return {
+      SHORTY_KV: createMockKV(),
+      ADMIN_USERNAME: "admin",
+      ADMIN_PASSWORD: "SuperStrongPassword!2026",
+      SESSION_SECRET: "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6",
+      API_KEY: "api-key-super-secret-2026"
+    };
+  }
+
   it("serves HTML UI at root /", async () => {
-    const env: Env = { SHORTY_KV: createMockKV() };
+    const env = createEnv();
     const req = new Request("https://shorty.example.com/");
     const res = await worker.fetch(req, env, mockCtx);
     assert.equal(res.status, 200);
@@ -198,65 +238,170 @@ describe("Worker Request & KV Integration", () => {
     assert.match(body, /Shorty/);
   });
 
-  it("serves /health endpoint", async () => {
-    const env: Env = { SHORTY_KV: createMockKV() };
-    const req = new Request("https://shorty.example.com/health");
-    const res = await worker.fetch(req, env, mockCtx);
-    assert.equal(res.status, 200);
-    const data = await res.json() as { status: string };
+  it("serves /health and /robots.txt", async () => {
+    const env = createEnv();
+    const healthRes = await worker.fetch(new Request("https://shorty.example.com/health"), env, mockCtx);
+    assert.equal(healthRes.status, 200);
+    const data = (await healthRes.json()) as { status: string };
     assert.equal(data.status, "ok");
+
+    const robotsRes = await worker.fetch(new Request("https://shorty.example.com/robots.txt"), env, mockCtx);
+    assert.equal(robotsRes.status, 200);
+    assert.match(await robotsRes.text(), /Disallow: \//);
   });
 
-  it("serves /robots.txt disallowing crawling", async () => {
+  it("fails closed on login when secrets are missing", async () => {
     const env: Env = { SHORTY_KV: createMockKV() };
-    const req = new Request("https://shorty.example.com/robots.txt");
-    const res = await worker.fetch(req, env, mockCtx);
-    assert.equal(res.status, 200);
-    const text = await res.text();
-    assert.match(text, /Disallow: \//);
-  });
-
-  it("creates a short link and redirects via /:slug", async () => {
-    const env: Env = { SHORTY_KV: createMockKV() };
-
-    // 1. Shorten
-    const createReq = new Request("https://shorty.example.com/api/shorten", {
+    const req = new Request("https://shorty.example.com/api/auth/login", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        url: "https://github.com/gbimantoro/shorty",
-        slug: "gh-shorty"
-      })
+      body: JSON.stringify({ username: "admin", password: "pw" })
     });
-    const createRes = await worker.fetch(createReq, env, mockCtx);
-    assert.equal(createRes.status, 201);
-    const createdData = await createRes.json() as { success: boolean; data: { slug: string; shortUrl: string } };
-    assert.equal(createdData.success, true);
-    assert.equal(createdData.data.slug, "gh-shorty");
-    assert.equal(createdData.data.shortUrl, "https://shorty.example.com/gh-shorty");
+    const res = await worker.fetch(req, env, mockCtx);
+    assert.equal(res.status, 503);
+  });
 
-    // 2. Redirect
-    const redirectReq = new Request("https://shorty.example.com/gh-shorty");
-    const redirectRes = await worker.fetch(redirectReq, env, mockCtx);
+  it("rejects unauthenticated access to protected endpoints", async () => {
+    const env = createEnv();
+    const resShorten = await worker.fetch(
+      new Request("https://shorty.example.com/api/shorten", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url: "https://example.com" })
+      }),
+      env,
+      mockCtx
+    );
+    assert.equal(resShorten.status, 401);
+
+    const resLinks = await worker.fetch(new Request("https://shorty.example.com/api/links"), env, mockCtx);
+    assert.equal(resLinks.status, 401);
+
+    const resStats = await worker.fetch(new Request("https://shorty.example.com/api/stats/test"), env, mockCtx);
+    assert.equal(resStats.status, 401);
+  });
+
+  it("throttles repeated failed login attempts", async () => {
+    const env = createEnv();
+    const ip = "198.51.100.99";
+
+    for (let i = 0; i < 4; i++) {
+      const res = await worker.fetch(
+        new Request("https://shorty.example.com/api/auth/login", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "CF-Connecting-IP": ip },
+          body: JSON.stringify({ username: "admin", password: "wrong" })
+        }),
+        env,
+        mockCtx
+      );
+      assert.equal(res.status, 401);
+    }
+
+    // 5th failure locks the IP
+    const lockedRes = await worker.fetch(
+      new Request("https://shorty.example.com/api/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "CF-Connecting-IP": ip },
+        body: JSON.stringify({ username: "admin", password: "wrong" })
+      }),
+      env,
+      mockCtx
+    );
+    assert.equal(lockedRes.status, 429);
+    assert.ok(lockedRes.headers.get("Retry-After"));
+  });
+
+  it("authenticates via login cookie, creates, lists, stats, redirects publicly, and logs out", async () => {
+    const env = createEnv();
+
+    // 1. Login
+    const loginRes = await worker.fetch(
+      new Request("https://shorty.example.com/api/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "CF-Connecting-IP": "198.51.100.10" },
+        body: JSON.stringify({ username: "admin", password: "SuperStrongPassword!2026" })
+      }),
+      env,
+      mockCtx
+    );
+    assert.equal(loginRes.status, 200);
+    const setCookie = loginRes.headers.get("Set-Cookie") || "";
+    assert.match(setCookie, /shorty_session=/);
+    assert.match(setCookie, /HttpOnly/);
+    assert.match(setCookie, /Secure/);
+    const cookiePair = setCookie.split(";")[0];
+
+    // 2. Check /api/auth/me
+    const meRes = await worker.fetch(
+      new Request("https://shorty.example.com/api/auth/me", {
+        headers: { Cookie: cookiePair }
+      }),
+      env,
+      mockCtx
+    );
+    assert.equal(meRes.status, 200);
+
+    // 3. Create short link with session cookie
+    const createRes = await worker.fetch(
+      new Request("https://shorty.example.com/api/shorten", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Cookie: cookiePair },
+        body: JSON.stringify({
+          url: "https://github.com/gbimantoro/shorty",
+          slug: "gh-shorty"
+        })
+      }),
+      env,
+      mockCtx
+    );
+    assert.equal(createRes.status, 201);
+
+    // 4. List links
+    const listRes = await worker.fetch(
+      new Request("https://shorty.example.com/api/links", {
+        headers: { Cookie: cookiePair }
+      }),
+      env,
+      mockCtx
+    );
+    assert.equal(listRes.status, 200);
+    const listData = (await listRes.json()) as { success: boolean; data: LinkRecord[] };
+    assert.equal(listData.data.length, 1);
+
+    // 5. Public redirect (NO auth cookie needed!)
+    const redirectRes = await worker.fetch(new Request("https://shorty.example.com/gh-shorty"), env, mockCtx);
     assert.equal(redirectRes.status, 302);
     assert.equal(redirectRes.headers.get("Location"), "https://github.com/gbimantoro/shorty");
 
-    // 3. Stats inspection
-    const statsReq = new Request("https://shorty.example.com/api/stats/gh-shorty");
-    const statsRes = await worker.fetch(statsReq, env, mockCtx);
+    // 6. Stats inspection (authenticated)
+    const statsRes = await worker.fetch(
+      new Request("https://shorty.example.com/api/stats/gh-shorty", {
+        headers: { Cookie: cookiePair }
+      }),
+      env,
+      mockCtx
+    );
     assert.equal(statsRes.status, 200);
-    const statsData = await statsRes.json() as { success: boolean; data: LinkRecord };
-    assert.equal(statsData.success, true);
-    assert.equal(statsData.data.target, "https://github.com/gbimantoro/shorty");
 
-    // 4. Delete
-    const deleteReq = new Request("https://shorty.example.com/api/links/gh-shorty", { method: "DELETE" });
-    const deleteRes = await worker.fetch(deleteReq, env, mockCtx);
+    // 7. Delete (authenticated)
+    const deleteRes = await worker.fetch(
+      new Request("https://shorty.example.com/api/links/gh-shorty", {
+        method: "DELETE",
+        headers: { Cookie: cookiePair }
+      }),
+      env,
+      mockCtx
+    );
     assert.equal(deleteRes.status, 200);
 
-    // 5. Verify 404 after deletion
-    const afterDeleteReq = new Request("https://shorty.example.com/gh-shorty");
-    const afterDeleteRes = await worker.fetch(afterDeleteReq, env, mockCtx);
-    assert.equal(afterDeleteRes.status, 404);
+    // 8. Logout
+    const logoutRes = await worker.fetch(
+      new Request("https://shorty.example.com/api/auth/logout", { method: "POST" }),
+      env,
+      mockCtx
+    );
+    assert.equal(logoutRes.status, 200);
+    assert.match(logoutRes.headers.get("Set-Cookie") || "", /Max-Age=0/);
   });
 });

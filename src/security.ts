@@ -1,4 +1,8 @@
+import type { Env, SessionPayload } from "./types";
+
 const BASE62_CHARS = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
+export const SESSION_COOKIE_NAME = "shorty_session";
+export const SESSION_TTL_SECONDS = 7 * 24 * 60 * 60; // 7 days
 
 const RESERVED_SLUGS = new Set([
   "api",
@@ -9,6 +13,7 @@ const RESERVED_SLUGS = new Set([
   "assets",
   "admin",
   "login",
+  "logout",
   "static",
   "_next",
   "shorten",
@@ -136,7 +141,7 @@ export async function timingSafeCompare(a: string, b: string): Promise<boolean> 
  */
 export async function verifyAuth(request: Request, configuredApiKey?: string): Promise<boolean> {
   if (!configuredApiKey || configuredApiKey.trim() === "") {
-    return true; // No key configured, open mode
+    return false;
   }
 
   const authHeader = request.headers.get("Authorization");
@@ -149,6 +154,167 @@ export async function verifyAuth(request: Request, configuredApiKey?: string): P
 
   if (!token) return false;
   return timingSafeCompare(token, configuredApiKey.trim());
+}
+
+function base64UrlEncode(bytes: Uint8Array): string {
+  let binary = "";
+  for (let i = 0; i < bytes.length; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+function base64UrlDecode(str: string): Uint8Array | null {
+  try {
+    const padded = str.replace(/-/g, "+").replace(/_/g, "/") + "===".slice((str.length + 3) % 4);
+    const binary = atob(padded);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) {
+      bytes[i] = binary.charCodeAt(i);
+    }
+    return bytes;
+  } catch {
+    return null;
+  }
+}
+
+async function getHmacKey(secret: string): Promise<CryptoKey> {
+  const enc = new TextEncoder();
+  return crypto.subtle.importKey(
+    "raw",
+    enc.encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign", "verify"]
+  );
+}
+
+/**
+ * Signs a stateless HMAC-SHA256 session token.
+ */
+export async function signSessionToken(
+  username: string,
+  secret: string,
+  ttlSeconds = SESSION_TTL_SECONDS
+): Promise<string> {
+  const now = Math.floor(Date.now() / 1000);
+  const jtiBytes = new Uint8Array(12);
+  crypto.getRandomValues(jtiBytes);
+
+  const payload: SessionPayload = {
+    sub: username,
+    iat: now,
+    exp: now + ttlSeconds,
+    jti: base64UrlEncode(jtiBytes)
+  };
+
+  const enc = new TextEncoder();
+  const payloadB64 = base64UrlEncode(enc.encode(JSON.stringify(payload)));
+  const key = await getHmacKey(secret);
+  const sigBuf = await crypto.subtle.sign("HMAC", key, enc.encode(payloadB64));
+  const sigB64 = base64UrlEncode(new Uint8Array(sigBuf));
+
+  return `${payloadB64}.${sigB64}`;
+}
+
+/**
+ * Verifies an HMAC-SHA256 session token and returns payload if valid and unexpired.
+ */
+export async function verifySessionToken(token: string, secret: string): Promise<SessionPayload | null> {
+  if (!token || !secret || secret.trim().length < 16) return null;
+  const parts = token.split(".");
+  if (parts.length !== 2) return null;
+
+  const [payloadB64, sigB64] = parts;
+  const sigBytes = base64UrlDecode(sigB64);
+  if (!sigBytes) return null;
+
+  const enc = new TextEncoder();
+  const key = await getHmacKey(secret);
+  const valid = await crypto.subtle.verify("HMAC", key, sigBytes, enc.encode(payloadB64));
+  if (!valid) return null;
+
+  const payloadBytes = base64UrlDecode(payloadB64);
+  if (!payloadBytes) return null;
+
+  try {
+    const payload = JSON.parse(new TextDecoder().decode(payloadBytes)) as SessionPayload;
+    const now = Math.floor(Date.now() / 1000);
+    if (!payload.sub || typeof payload.exp !== "number" || payload.exp <= now) {
+      return null;
+    }
+    return payload;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Parses Cookie header into a key-value map.
+ */
+export function parseCookies(cookieHeader: string | null): Record<string, string> {
+  const cookies: Record<string, string> = {};
+  if (!cookieHeader) return cookies;
+
+  for (const part of cookieHeader.split(";")) {
+    const idx = part.indexOf("=");
+    if (idx === -1) continue;
+    const key = part.slice(0, idx).trim();
+    const val = part.slice(idx + 1).trim();
+    if (key) {
+      try {
+        cookies[key] = decodeURIComponent(val);
+      } catch {
+        cookies[key] = val;
+      }
+    }
+  }
+  return cookies;
+}
+
+/**
+ * Verifies request authentication via either valid session cookie or API key.
+ * Fail-closed: returns null if not authenticated.
+ */
+export async function verifyRequestAuth(
+  request: Request,
+  env: Pick<Env, "SESSION_SECRET" | "API_KEY">
+): Promise<{ authenticated: true; method: "session" | "api_key"; username: string } | null> {
+  // 1. Check HttpOnly session cookie
+  if (env.SESSION_SECRET && env.SESSION_SECRET.trim().length >= 16) {
+    const cookies = parseCookies(request.headers.get("Cookie"));
+    const token = cookies[SESSION_COOKIE_NAME];
+    if (token) {
+      const session = await verifySessionToken(token, env.SESSION_SECRET);
+      if (session) {
+        return { authenticated: true, method: "session", username: session.sub };
+      }
+    }
+  }
+
+  // 2. Check API Key header (Bearer or X-API-Key)
+  if (await verifyAuth(request, env.API_KEY)) {
+    return { authenticated: true, method: "api_key", username: "api-key" };
+  }
+
+  return null;
+}
+
+/**
+ * Builds Set-Cookie header for shorty_session.
+ */
+export function buildSessionCookie(token: string, isHttps: boolean, maxAge = SESSION_TTL_SECONDS): string {
+  const parts = [
+    `${SESSION_COOKIE_NAME}=${encodeURIComponent(token)}`,
+    "Path=/",
+    "HttpOnly",
+    "SameSite=Lax",
+    `Max-Age=${maxAge}`
+  ];
+  if (isHttps) {
+    parts.push("Secure");
+  }
+  return parts.join("; ");
 }
 
 /**
@@ -179,6 +345,54 @@ export function checkRateLimit(clientIp: string, limitPerMinute = 60): { allowed
 
   record.count += 1;
   return { allowed: true, remaining: limitPerMinute - record.count, reset: Math.ceil(record.resetAt / 1000) };
+}
+
+/**
+ * Brute-force protection for login: 5 failed attempts in 60s -> 300s lock.
+ */
+const loginThrottleMap = new Map<string, { fails: number; windowStart: number; lockedUntil: number }>();
+
+export function checkLoginThrottle(key: string): { allowed: boolean; retryAfter: number } {
+  const now = Date.now();
+  const entry = loginThrottleMap.get(key);
+  if (!entry) return { allowed: true, retryAfter: 0 };
+
+  if (entry.lockedUntil > now) {
+    return { allowed: false, retryAfter: Math.ceil((entry.lockedUntil - now) / 1000) };
+  }
+
+  if (now - entry.windowStart > 60_000) {
+    loginThrottleMap.delete(key);
+  }
+  return { allowed: true, retryAfter: 0 };
+}
+
+export function recordLoginFailure(key: string): { locked: boolean; retryAfter: number } {
+  const now = Date.now();
+  if (loginThrottleMap.size > 2000) {
+    for (const [k, v] of loginThrottleMap.entries()) {
+      if (v.lockedUntil < now && now - v.windowStart > 60_000) {
+        loginThrottleMap.delete(k);
+      }
+    }
+  }
+
+  const entry = loginThrottleMap.get(key);
+  if (!entry || now - entry.windowStart > 60_000) {
+    loginThrottleMap.set(key, { fails: 1, windowStart: now, lockedUntil: 0 });
+    return { locked: false, retryAfter: 0 };
+  }
+
+  entry.fails += 1;
+  if (entry.fails >= 5) {
+    entry.lockedUntil = now + 300_000; // 5-minute lock
+    return { locked: true, retryAfter: 300 };
+  }
+  return { locked: false, retryAfter: 0 };
+}
+
+export function clearLoginThrottle(key: string): void {
+  loginThrottleMap.delete(key);
 }
 
 /**

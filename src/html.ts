@@ -32,7 +32,7 @@ export function renderHtml(appName = "Shorty"): string {
     }
     .container {
       width: 100%;
-      max-width: 540px;
+      max-width: 620px;
       background: var(--card);
       border: 1px solid var(--border);
       border-radius: 12px;
@@ -46,6 +46,7 @@ export function renderHtml(appName = "Shorty"): string {
       margin-bottom: 1.5rem;
       border-bottom: 1px solid var(--border);
       padding-bottom: 1rem;
+      gap: 0.5rem;
     }
     .brand {
       display: flex;
@@ -55,15 +56,30 @@ export function renderHtml(appName = "Shorty"): string {
       font-size: 1.25rem;
       letter-spacing: -0.02em;
     }
+    .header-right {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
     .badge {
       font-family: var(--font-mono);
       font-size: 0.7rem;
       background: rgba(16, 185, 129, 0.15);
       color: var(--accent);
-      padding: 0.15rem 0.5rem;
+      padding: 0.2rem 0.55rem;
       border-radius: 9999px;
       border: 1px solid rgba(16, 185, 129, 0.3);
     }
+    .logout-btn {
+      background: transparent;
+      border: 1px solid var(--border);
+      color: var(--muted);
+      padding: 0.25rem 0.6rem;
+      border-radius: 6px;
+      font-size: 0.75rem;
+      cursor: pointer;
+    }
+    .logout-btn:hover { color: var(--text); border-color: var(--muted); }
     .tabs {
       display: flex;
       gap: 0.5rem;
@@ -91,7 +107,7 @@ export function renderHtml(appName = "Shorty"): string {
     }
     label {
       display: block;
-      font-size: 0.8rem;
+      font-size: 0.75rem;
       font-weight: 500;
       color: var(--muted);
       margin-bottom: 0.35rem;
@@ -148,10 +164,19 @@ export function renderHtml(appName = "Shorty"): string {
       color: var(--text);
       border: none;
       border-radius: 4px;
-      padding: 0.4rem 0.8rem;
-      font-size: 0.8rem;
+      padding: 0.35rem 0.7rem;
+      font-size: 0.78rem;
       cursor: pointer;
       font-weight: 500;
+    }
+    .del-btn {
+      background: rgba(239, 68, 68, 0.12);
+      color: var(--danger);
+      border: 1px solid rgba(239, 68, 68, 0.3);
+      border-radius: 4px;
+      padding: 0.35rem 0.6rem;
+      font-size: 0.75rem;
+      cursor: pointer;
     }
     .error-msg {
       margin-top: 1rem;
@@ -168,7 +193,7 @@ export function renderHtml(appName = "Shorty"): string {
     .stats-table {
       width: 100%;
       border-collapse: collapse;
-      margin-top: 1rem;
+      margin-top: 0.5rem;
       font-size: 0.85rem;
     }
     .stats-table td {
@@ -183,6 +208,55 @@ export function renderHtml(appName = "Shorty"): string {
       font-family: var(--font-mono);
       word-break: break-all;
     }
+    .links-list {
+      margin-top: 1rem;
+      max-height: 360px;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 0.6rem;
+    }
+    .link-item {
+      background: #0d1117;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 0.75rem;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 0.75rem;
+    }
+    .link-meta { min-width: 0; flex: 1; }
+    .link-slug {
+      font-family: var(--font-mono);
+      color: var(--accent);
+      font-size: 0.9rem;
+      font-weight: 600;
+      text-decoration: none;
+    }
+    .link-target {
+      font-size: 0.78rem;
+      color: var(--muted);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      margin-top: 0.2rem;
+    }
+    .link-actions {
+      display: flex;
+      align-items: center;
+      gap: 0.4rem;
+      flex-shrink: 0;
+    }
+    .clicks-pill {
+      font-family: var(--font-mono);
+      font-size: 0.72rem;
+      color: var(--muted);
+      background: var(--card);
+      border: 1px solid var(--border);
+      padding: 0.2rem 0.45rem;
+      border-radius: 4px;
+    }
   </style>
 </head>
 <body>
@@ -195,82 +269,257 @@ export function renderHtml(appName = "Shorty"): string {
         </svg>
         <span>${appName}</span>
       </div>
-      <span class="badge">Cloudflare Edge KV</span>
-    </div>
-
-    <div class="tabs">
-      <button class="tab-btn active" id="tab-shorten-btn" onclick="switchTab('shorten')">Shorten Link</button>
-      <button class="tab-btn" id="tab-stats-btn" onclick="switchTab('stats')">Analytics & Stats</button>
-    </div>
-
-    <!-- Shorten Panel -->
-    <div id="panel-shorten">
-      <form id="shorten-form" onsubmit="handleShorten(event)">
-        <div class="field">
-          <label for="url">Target URL (http / https)</label>
-          <input type="url" id="url" required placeholder="https://example.com/very/long/url..." />
-        </div>
-        <div class="field">
-          <label for="custom-slug">Custom Alias (Optional)</label>
-          <input type="text" id="custom-slug" placeholder="e.g. spring-event-2026" maxlength="64" />
-        </div>
-        <div class="field">
-          <label for="api-key">API Key (Leave blank if open)</label>
-          <input type="password" id="api-key" placeholder="Bearer / X-API-Key token" />
-        </div>
-        <button type="submit" class="btn" id="submit-btn">Shorten URL</button>
-      </form>
-
-      <div class="error-msg" id="shorten-error"></div>
-
-      <div class="result-box" id="shorten-result">
-        <span class="result-url" id="short-url-text"></span>
-        <div style="display:flex; justify-content:space-between; align-items:center;">
-          <button class="copy-btn" id="copy-btn" onclick="copyResult()">Copy Short Link</button>
-          <a id="visit-link" href="#" target="_blank" style="color:var(--muted); font-size:0.8rem; text-decoration:none;">Open ↗</a>
-        </div>
+      <div class="header-right">
+        <span class="badge" id="user-badge">Edge KV</span>
+        <button class="logout-btn" id="logout-btn" style="display:none;" onclick="handleLogout()">Logout</button>
       </div>
     </div>
 
-    <!-- Stats Panel -->
-    <div id="panel-stats" style="display: none;">
-      <form id="stats-form" onsubmit="handleStats(event)">
+    <!-- Loading -->
+    <div id="view-loading" style="text-align:center; padding:2rem 0; color:var(--muted); font-size:0.9rem;">
+      Checking session...
+    </div>
+
+    <!-- Login View -->
+    <div id="view-login" style="display:none;">
+      <form onsubmit="handleLogin(event)">
         <div class="field">
-          <label for="stats-slug">Slug or Short Link</label>
-          <input type="text" id="stats-slug" required placeholder="e.g. spring-event-2026" />
+          <label for="login-user">Username</label>
+          <input type="text" id="login-user" autocomplete="username" required placeholder="admin" />
         </div>
-        <button type="submit" class="btn">Inspect Stats</button>
+        <div class="field">
+          <label for="login-pass">Password</label>
+          <input type="password" id="login-pass" autocomplete="current-password" required placeholder="••••••••••••" />
+        </div>
+        <button type="submit" class="btn" id="login-btn">Sign In</button>
       </form>
+      <div class="error-msg" id="login-error"></div>
+    </div>
 
-      <div class="error-msg" id="stats-error"></div>
+    <!-- App View -->
+    <div id="view-app" style="display:none;">
+      <div class="tabs">
+        <button class="tab-btn active" id="tab-shorten-btn" onclick="switchTab('shorten')">Shorten</button>
+        <button class="tab-btn" id="tab-links-btn" onclick="switchTab('links')">Links</button>
+        <button class="tab-btn" id="tab-stats-btn" onclick="switchTab('stats')">Stats</button>
+      </div>
 
-      <div class="result-box" id="stats-result">
-        <table class="stats-table">
-          <tr><td>Slug</td><td id="st-slug">-</td></tr>
-          <tr><td>Target</td><td id="st-target">-</td></tr>
-          <tr><td>Total Clicks</td><td id="st-clicks" style="color:var(--accent); font-weight:700;">-</td></tr>
-          <tr><td>Created</td><td id="st-created">-</td></tr>
-          <tr><td>Last Click</td><td id="st-last">-</td></tr>
-          <tr><td>Expires</td><td id="st-expires">-</td></tr>
-        </table>
+      <!-- Shorten Panel -->
+      <div id="panel-shorten">
+        <form id="shorten-form" onsubmit="handleShorten(event)">
+          <div class="field">
+            <label for="url">Target URL (http / https)</label>
+            <input type="url" id="url" required placeholder="https://example.com/very/long/url..." />
+          </div>
+          <div class="field">
+            <label for="custom-slug">Custom Alias (Optional)</label>
+            <input type="text" id="custom-slug" placeholder="e.g. spring-event-2026" maxlength="64" />
+          </div>
+          <button type="submit" class="btn" id="submit-btn">Shorten URL</button>
+        </form>
+
+        <div class="error-msg" id="shorten-error"></div>
+
+        <div class="result-box" id="shorten-result">
+          <span class="result-url" id="short-url-text"></span>
+          <div style="display:flex; justify-content:space-between; align-items:center;">
+            <button class="copy-btn" id="copy-btn" onclick="copyResult()">Copy Short Link</button>
+            <a id="visit-link" href="#" target="_blank" style="color:var(--muted); font-size:0.8rem; text-decoration:none;">Open ↗</a>
+          </div>
+        </div>
+      </div>
+
+      <!-- Links Manager Panel -->
+      <div id="panel-links" style="display:none;">
+        <div class="field" style="margin-bottom:0.5rem;">
+          <input type="text" id="links-search" placeholder="Search slug or target URL..." oninput="renderLinks()" />
+        </div>
+        <div id="links-count" style="font-size:0.75rem; color:var(--muted);"></div>
+        <div class="links-list" id="links-list"></div>
+      </div>
+
+      <!-- Stats Panel -->
+      <div id="panel-stats" style="display:none;">
+        <form id="stats-form" onsubmit="handleStats(event)">
+          <div class="field">
+            <label for="stats-slug">Slug or Short Link</label>
+            <input type="text" id="stats-slug" required placeholder="e.g. daftar" />
+          </div>
+          <button type="submit" class="btn">Inspect Stats</button>
+        </form>
+
+        <div class="error-msg" id="stats-error"></div>
+
+        <div class="result-box" id="stats-result">
+          <table class="stats-table">
+            <tr><td>Slug</td><td id="st-slug">-</td></tr>
+            <tr><td>Target</td><td id="st-target">-</td></tr>
+            <tr><td>Total Clicks</td><td id="st-clicks" style="color:var(--accent); font-weight:700;">-</td></tr>
+            <tr><td>Created</td><td id="st-created">-</td></tr>
+            <tr><td>Last Click</td><td id="st-last">-</td></tr>
+            <tr><td>Expires</td><td id="st-expires">-</td></tr>
+          </table>
+        </div>
       </div>
     </div>
 
     <div class="footer">
-      Powered by Cloudflare Workers &bull; Sub-10ms Edge Redirects &bull; Super Secure
+      Powered by Cloudflare Workers &bull; Sub-10ms Edge Redirects &bull; HttpOnly Session Auth
     </div>
   </div>
 
   <script>
-    const savedKey = localStorage.getItem("shorty_api_key");
-    if (savedKey) document.getElementById("api-key").value = savedKey;
+    let allLinks = [];
+
+    async function init() {
+      try {
+        const res = await fetch("/api/auth/me");
+        if (res.ok) {
+          const data = await res.json();
+          showApp(data.data.username);
+          return;
+        }
+      } catch {}
+      showLogin();
+    }
+
+    function showLogin() {
+      document.getElementById("view-loading").style.display = "none";
+      document.getElementById("view-app").style.display = "none";
+      document.getElementById("logout-btn").style.display = "none";
+      document.getElementById("user-badge").textContent = "Edge KV";
+      document.getElementById("view-login").style.display = "block";
+    }
+
+    function showApp(username) {
+      document.getElementById("view-loading").style.display = "none";
+      document.getElementById("view-login").style.display = "none";
+      document.getElementById("view-app").style.display = "block";
+      document.getElementById("logout-btn").style.display = "inline-block";
+      document.getElementById("user-badge").textContent = "@" + username;
+    }
+
+    async function handleLogin(e) {
+      e.preventDefault();
+      const errBox = document.getElementById("login-error");
+      const btn = document.getElementById("login-btn");
+      errBox.style.display = "none";
+      btn.disabled = true;
+
+      const username = document.getElementById("login-user").value.trim();
+      const password = document.getElementById("login-pass").value;
+
+      try {
+        const res = await fetch("/api/auth/login", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ username, password })
+        });
+        const data = await res.json();
+        if (!res.ok || !data.success) {
+          throw new Error(data.error || "Invalid credentials");
+        }
+        document.getElementById("login-pass").value = "";
+        showApp(data.data.username);
+      } catch (err) {
+        errBox.textContent = err.message;
+        errBox.style.display = "block";
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    async function handleLogout() {
+      await fetch("/api/auth/logout", { method: "POST" });
+      allLinks = [];
+      showLogin();
+    }
 
     function switchTab(tab) {
-      const isShorten = tab === "shorten";
-      document.getElementById("panel-shorten").style.display = isShorten ? "block" : "none";
-      document.getElementById("panel-stats").style.display = isShorten ? "none" : "block";
-      document.getElementById("tab-shorten-btn").className = isShorten ? "tab-btn active" : "tab-btn";
-      document.getElementById("tab-stats-btn").className = isShorten ? "tab-btn" : "tab-btn active";
+      document.getElementById("panel-shorten").style.display = tab === "shorten" ? "block" : "none";
+      document.getElementById("panel-links").style.display = tab === "links" ? "block" : "none";
+      document.getElementById("panel-stats").style.display = tab === "stats" ? "block" : "none";
+      document.getElementById("tab-shorten-btn").className = tab === "shorten" ? "tab-btn active" : "tab-btn";
+      document.getElementById("tab-links-btn").className = tab === "links" ? "tab-btn active" : "tab-btn";
+      document.getElementById("tab-stats-btn").className = tab === "stats" ? "tab-btn active" : "tab-btn";
+      if (tab === "links") loadLinks();
+    }
+
+    async function loadLinks() {
+      const listEl = document.getElementById("links-list");
+      listEl.innerHTML = '<div style="color:var(--muted);font-size:0.85rem;">Loading links...</div>';
+      try {
+        const res = await fetch("/api/links");
+        if (res.status === 401) return showLogin();
+        const data = await res.json();
+        if (!res.ok || !data.success) throw new Error(data.error || "Failed to load links");
+        allLinks = data.data.sort((a, b) => (b.clicks || 0) - (a.clicks || 0));
+        renderLinks();
+      } catch (err) {
+        listEl.innerHTML = '<div style="color:var(--danger);font-size:0.85rem;">' + err.message + '</div>';
+      }
+    }
+
+    function renderLinks() {
+      const q = (document.getElementById("links-search").value || "").toLowerCase();
+      const filtered = allLinks.filter(l =>
+        l.slug.toLowerCase().includes(q) || l.target.toLowerCase().includes(q)
+      );
+      document.getElementById("links-count").textContent = filtered.length + " link(s)";
+      const listEl = document.getElementById("links-list");
+      listEl.innerHTML = "";
+      for (const item of filtered) {
+        const row = document.createElement("div");
+        row.className = "link-item";
+
+        const meta = document.createElement("div");
+        meta.className = "link-meta";
+        const a = document.createElement("a");
+        a.className = "link-slug";
+        a.href = "/" + item.slug;
+        a.target = "_blank";
+        a.textContent = "/" + item.slug;
+        const target = document.createElement("div");
+        target.className = "link-target";
+        target.textContent = item.target;
+        meta.appendChild(a);
+        meta.appendChild(target);
+
+        const actions = document.createElement("div");
+        actions.className = "link-actions";
+        const pill = document.createElement("span");
+        pill.className = "clicks-pill";
+        pill.textContent = (item.clicks || 0) + " clicks";
+        const cp = document.createElement("button");
+        cp.className = "copy-btn";
+        cp.textContent = "Copy";
+        cp.onclick = () => {
+          navigator.clipboard.writeText(window.location.origin + "/" + item.slug);
+          cp.textContent = "Copied";
+          setTimeout(() => cp.textContent = "Copy", 1200);
+        };
+        const del = document.createElement("button");
+        del.className = "del-btn";
+        del.textContent = "Delete";
+        del.onclick = () => deleteLink(item.slug);
+
+        actions.appendChild(pill);
+        actions.appendChild(cp);
+        actions.appendChild(del);
+        row.appendChild(meta);
+        row.appendChild(actions);
+        listEl.appendChild(row);
+      }
+    }
+
+    async function deleteLink(slug) {
+      if (!confirm("Delete /" + slug + "?")) return;
+      const res = await fetch("/api/links/" + encodeURIComponent(slug), { method: "DELETE" });
+      if (res.status === 401) return showLogin();
+      if (res.ok) {
+        allLinks = allLinks.filter(l => l.slug !== slug);
+        renderLinks();
+      }
     }
 
     async function handleShorten(e) {
@@ -284,18 +533,14 @@ export function renderHtml(appName = "Shorty"): string {
 
       const url = document.getElementById("url").value.trim();
       const slug = document.getElementById("custom-slug").value.trim() || undefined;
-      const apiKey = document.getElementById("api-key").value.trim();
-      if (apiKey) localStorage.setItem("shorty_api_key", apiKey);
 
       try {
-        const headers = { "Content-Type": "application/json" };
-        if (apiKey) headers["Authorization"] = "Bearer " + apiKey;
-
         const res = await fetch("/api/shorten", {
           method: "POST",
-          headers,
+          headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ url, slug })
         });
+        if (res.status === 401) return showLogin();
         const data = await res.json();
         if (!res.ok || !data.success) {
           throw new Error(data.error || "Failed to shorten URL");
@@ -325,6 +570,7 @@ export function renderHtml(appName = "Shorty"): string {
 
       try {
         const res = await fetch("/api/stats/" + encodeURIComponent(slug));
+        if (res.status === 401) return showLogin();
         const data = await res.json();
         if (!res.ok || !data.success) {
           throw new Error(data.error || "Slug not found");
@@ -351,6 +597,8 @@ export function renderHtml(appName = "Shorty"): string {
         setTimeout(() => btn.textContent = "Copy Short Link", 2000);
       });
     }
+
+    init();
   </script>
 </body>
 </html>`;

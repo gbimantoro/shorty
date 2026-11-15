@@ -1,9 +1,19 @@
 export interface Env {
   SHORTY_KV: KVNamespace;
   API_KEY?: string;
+  ADMIN_USERNAME?: string;
+  ADMIN_PASSWORD?: string;
+  SESSION_SECRET?: string;
   APP_NAME?: string;
   DEFAULT_REDIRECT_CODE?: string;
   RATE_LIMIT_PER_MINUTE?: string;
+}
+
+export interface SessionPayload {
+  sub: string;
+  iat: number;
+  exp: number;
+  jti: string;
 }
 
 export interface LinkRecord {
@@ -14,6 +24,7 @@ export interface LinkRecord {
   status: number;
   clicks: number;
   lastClickedAt: number | null;
+  domain?: string;
   createdBy?: string;
 }
 
